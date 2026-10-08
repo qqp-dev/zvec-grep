@@ -189,6 +189,12 @@ export const zvecGrepIndexInputSchema = z.object({
     .boolean()
     .optional()
     .describe("Replace the index root-path configuration."),
+  runtimeEphemeral: z
+    .boolean()
+    .optional()
+    .describe(
+      "Use embedding runtime overrides for this server indexing request without persisting them in the workspace manifest.",
+    ),
   globs: pathFilterInputSchema.describe(
     "Ordered case-sensitive rg-style glob rules for indexed files.",
   ),
@@ -605,6 +611,14 @@ export const zvecGrepServerStatusOutputSchema = z.object({
   active_runtimes: z.number().int().nonnegative(),
   queued_jobs: z.number().int().nonnegative(),
   running_jobs: z.number().int().nonnegative(),
+  watchers: z
+    .object({
+      registered: z.number().int().nonnegative(),
+      maximum: z.number().int().positive(),
+      per_root_maximum: z.number().int().positive(),
+      limited_roots: z.number().int().nonnegative(),
+    })
+    .optional(),
   models: z.object({
     loaded: z.number().int().nonnegative(),
     active_leases: z.number().int().nonnegative(),

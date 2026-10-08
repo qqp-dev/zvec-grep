@@ -660,7 +660,11 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
   private async resolveEffectiveParallelism(
     textCount: number,
   ): Promise<number> {
-    const requested = await this.resolveParallelism();
+    let requested = await this.resolveParallelism();
+    const llama = await this.ensureLlama();
+    if (this.shouldDisableModelGpuOffload() || !llama.gpu) {
+      requested = Math.min(requested, this.cpuThreadBudget() ?? requested);
+    }
     return Math.max(1, Math.min(requested, Math.max(1, textCount)));
   }
 
@@ -670,12 +674,34 @@ export class LlamaCppEmbeddingModel extends BaseEmbeddingModel {
       return 0;
     }
 
+    const threads = this.cpuThreadBudget();
+    if (threads !== undefined) {
+      return Math.max(1, Math.floor(threads / Math.max(1, parallelism)));
+    }
+
     const cores = llama.cpuMathCores ?? 4;
     if (parallelism <= 1) {
       return 0;
     }
 
     return Math.max(1, Math.floor(cores / parallelism));
+  }
+
+  private cpuThreadBudget(): number | undefined {
+    const raw = process.env.ZVEC_GREP_CPU_THREADS?.trim();
+    if (!raw) return undefined;
+    const value = Number(raw);
+    if (
+      !/^\d+$/.test(raw) ||
+      !Number.isSafeInteger(value) ||
+      value < 1 ||
+      value > 1_024
+    ) {
+      throw new Error(
+        "ZVEC_GREP_CPU_THREADS must be an integer between 1 and 1024.",
+      );
+    }
+    return value;
   }
 
   private truncateToContextSize(text: string): {

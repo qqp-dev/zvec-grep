@@ -4,6 +4,10 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathCanAffectIndex } from "../engine/pipeline/indexing/scanner/index.js";
 import type { RootPath } from "../engine/types.js";
 import { ChangeSet, type ChangeSetSnapshot } from "./change-set.js";
+import {
+  DEFAULT_MAX_DIRECTORY_WATCHERS,
+  DirectoryWatchBudget,
+} from "./watch-budget.js";
 
 export type WatchManagerOptions = {
   root: string;
@@ -23,6 +27,12 @@ export type WatchManagerOptions = {
   resumeThresholdMs?: number;
   platform?: NodeJS.Platform;
   getRootPaths?: () => readonly RootPath[] | undefined;
+  maxDirectoryWatchers?: number;
+  watchBudget?: DirectoryWatchBudget;
+  resourceReconcileIntervalMs?: number;
+  onResourceLimit?: (
+    reason: "root_budget" | "daemon_budget" | "system_limit",
+  ) => void;
 };
 
 type WatchRecoveryState = {
@@ -49,6 +59,10 @@ export class WatchManager {
   private maxWaitTimer?: ReturnType<typeof setTimeout>;
   private reconcileTimer?: ReturnType<typeof setInterval>;
   private resumeTimer?: ReturnType<typeof setInterval>;
+  private resourceReconcileTimer?: ReturnType<typeof setInterval>;
+  private resourceLimited = false;
+  private readonly watchBudget: DirectoryWatchBudget;
+  private readonly maxDirectoryWatchers: number;
   private closed = false;
   private active = false;
   private useDirectoryWatchers: boolean;
@@ -56,6 +70,17 @@ export class WatchManager {
   private lastResumeCheckAt = Date.now();
 
   constructor(private readonly options: WatchManagerOptions) {
+    this.maxDirectoryWatchers =
+      options.maxDirectoryWatchers ?? DEFAULT_MAX_DIRECTORY_WATCHERS;
+    if (
+      !Number.isSafeInteger(this.maxDirectoryWatchers) ||
+      this.maxDirectoryWatchers < 1
+    ) {
+      throw new RangeError("maxDirectoryWatchers must be a positive integer.");
+    }
+    this.watchBudget =
+      options.watchBudget ??
+      new DirectoryWatchBudget(this.maxDirectoryWatchers);
     this.changes = this.newChangeSet();
     this.useDirectoryWatchers = requiresDirectoryWatchers(
       options.platform ?? process.platform,
@@ -93,6 +118,8 @@ export class WatchManager {
     }
     this.closed = true;
     for (const watcher of this.watchers) watcher.close();
+    for (let index = 0; index < this.directoryWatchers.size; index += 1)
+      this.watchBudget.release();
     this.watchers.clear();
     this.watchedDirectories.clear();
     this.directoryWatchers.clear();
@@ -101,6 +128,7 @@ export class WatchManager {
     if (this.maxWaitTimer) clearTimeout(this.maxWaitTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.resumeTimer) clearInterval(this.resumeTimer);
+    if (this.resourceReconcileTimer) clearInterval(this.resourceReconcileTimer);
     for (const recovery of this.recoveryStates.values()) {
       if (recovery.retryTimer) clearTimeout(recovery.retryTimer);
       if (recovery.stableTimer) clearTimeout(recovery.stableTimer);
@@ -117,10 +145,23 @@ export class WatchManager {
     await this.startFlush();
   }
 
+  snapshot(): { registered: number; maximum: number; limited: boolean } {
+    return {
+      registered: this.directoryWatchers.size,
+      maximum: this.maxDirectoryWatchers,
+      limited: this.resourceLimited,
+    };
+  }
+
   async refreshPaths(): Promise<void> {
     if (this.closed) {
       return;
     }
+    // Only an explicit path refresh retries registration after exhaustion;
+    // periodic reconciliation does not churn watchers or retry allocations.
+    this.resourceLimited = false;
+    if (this.resourceReconcileTimer) clearInterval(this.resourceReconcileTimer);
+    this.resourceReconcileTimer = undefined;
     if (this.directoryWatchers.size === 0) {
       if (this.useDirectoryWatchers) {
         await this.watchDirectoryTree(
@@ -280,17 +321,22 @@ export class WatchManager {
     if (!directory || directory === this.options.root) {
       this.setActive(true);
     }
-    watcher.on("error", () => {
+    watcher.on("error", (error: unknown) => {
       watcher.close();
-      this.watchers.delete(watcher);
+      if (!this.watchers.delete(watcher)) return;
       if (directory) {
         this.directoryWatchers.delete(directory);
         this.watchedDirectories.delete(directory);
+        this.watchBudget.release();
       }
       if (!directory || directory === this.options.root) {
         this.setActive(false);
       }
-      this.recoverWatcher(recoveryKey, directory, factory);
+      if (isWatchResourceError(error)) {
+        this.limitResources("system_limit");
+      } else {
+        this.recoverWatcher(recoveryKey, directory, factory);
+      }
     });
     const recovery = this.recoveryState(recoveryKey);
     if (recovery.stableTimer) clearTimeout(recovery.stableTimer);
@@ -427,6 +473,7 @@ export class WatchManager {
   ): Promise<void> {
     if (
       this.closed ||
+      this.resourceLimited ||
       basename(directory) === ".git" ||
       basename(directory) === ".zvec-grep"
     ) {
@@ -439,6 +486,14 @@ export class WatchManager {
       return;
     }
     if (!this.watchedDirectories.has(directory)) {
+      if (this.directoryWatchers.size >= this.maxDirectoryWatchers) {
+        this.limitResources("root_budget");
+        return;
+      }
+      if (!this.watchBudget.reserve()) {
+        this.limitResources("daemon_budget");
+        return;
+      }
       this.watchedDirectories.add(directory);
       try {
         this.addWatcher(
@@ -459,7 +514,12 @@ export class WatchManager {
           directory,
         );
       } catch (error) {
+        this.watchBudget.release();
         this.watchedDirectories.delete(directory);
+        if (isWatchResourceError(error)) {
+          this.limitResources("system_limit");
+          return;
+        }
         if (isMissingWatchTarget(error)) {
           this.queueFullReconcile();
           return;
@@ -471,13 +531,30 @@ export class WatchManager {
     const entries = await readdir(directory, { withFileTypes: true }).catch(
       () => [],
     );
-    await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory())
-        .map((entry) =>
-          this.watchDirectoryTree(join(directory, entry.name), factory),
-        ),
+    // Traverse sequentially: fan-out proportional to tree size can exhaust
+    // memory even when the number of successful watch registrations is bounded.
+    for (const entry of entries) {
+      if (this.closed || this.resourceLimited) break;
+      if (entry.isDirectory()) {
+        await this.watchDirectoryTree(join(directory, entry.name), factory);
+      }
+    }
+  }
+
+  private limitResources(
+    reason: "root_budget" | "daemon_budget" | "system_limit",
+  ): void {
+    if (this.closed || this.resourceLimited) return;
+    this.resourceLimited = true;
+    this.options.onResourceLimit?.(reason);
+    this.queueFullReconcile();
+    // Keep searches aware of unwatched changes without repeating failing
+    // allocations or immediately starting an expensive indexing job.
+    this.resourceReconcileTimer = setInterval(
+      () => this.queueFullReconcile(),
+      this.options.resourceReconcileIntervalMs ?? 60_000,
     );
+    this.resourceReconcileTimer.unref?.();
   }
 
   private async shouldTrackPath(
@@ -528,6 +605,7 @@ export class WatchManager {
         this.watchers.delete(watcher);
         this.directoryWatchers.delete(directory);
         this.watchedDirectories.delete(directory);
+        this.watchBudget.release();
         if (directory === this.options.root) {
           this.setActive(false);
         }
@@ -549,4 +627,14 @@ function isMissingWatchTarget(error: unknown): boolean {
     return false;
   }
   return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
+function isWatchResourceError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error))
+    return false;
+  return (
+    error.code === "ENOSPC" ||
+    error.code === "EMFILE" ||
+    error.code === "ENFILE"
+  );
 }

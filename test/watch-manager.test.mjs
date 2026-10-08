@@ -5,6 +5,133 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WatchManager } from "../dist/daemon/watch-manager.js";
+import { DirectoryWatchBudget } from "../dist/daemon/watch-budget.js";
+
+test("Linux watch budget stops registration and keeps quiet reconciliation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-watch-budget-"));
+  for (let index = 0; index < 8; index += 1) {
+    await mkdir(join(root, `source-${index}`));
+  }
+  let allocations = 0;
+  let reconciliations = 0;
+  const limits = [];
+  const manager = new WatchManager({
+    root,
+    platform: "linux",
+    maxDirectoryWatchers: 2,
+    debounceMs: 1,
+    maxWaitMs: 5,
+    reconcileIntervalMs: 0,
+    resumeCheckIntervalMs: 0,
+    resourceReconcileIntervalMs: 15,
+    watchFactory: (_directory, options) => {
+      assert.equal(options.recursive, false);
+      allocations += 1;
+      const watcher = new EventEmitter();
+      watcher.close = () => {};
+      return watcher;
+    },
+    onResourceLimit: (reason) => limits.push(reason),
+    onChanges: (changes, reason) => {
+      assert.equal(changes.forceFullReconcile, true);
+      assert.equal(reason, "reconcile");
+      reconciliations += 1;
+    },
+  });
+  try {
+    manager.start();
+    await waitFor(() => reconciliations >= 3);
+    assert.equal(allocations, 2);
+    assert.deepEqual(limits, ["root_budget"]);
+    assert.deepEqual(manager.snapshot(), {
+      registered: 2,
+      maximum: 2,
+      limited: true,
+    });
+  } finally {
+    await manager.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("directory watch budgets are shared and released when roots close", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-shared-watch-budget-"));
+  const first = join(root, "first");
+  const second = join(root, "second");
+  await mkdir(join(first, "src"), { recursive: true });
+  await mkdir(second);
+  const budget = new DirectoryWatchBudget(2);
+  const managers = [first, second].map(
+    (directory) =>
+      new WatchManager({
+        root: directory,
+        platform: "linux",
+        watchBudget: budget,
+        reconcileIntervalMs: 0,
+        resumeCheckIntervalMs: 0,
+        watchFactory: () => {
+          const watcher = new EventEmitter();
+          watcher.close = () => {};
+          return watcher;
+        },
+        onChanges: () => {},
+      }),
+  );
+  try {
+    managers[0].start();
+    await waitFor(() => budget.snapshot().registered === 2);
+    managers[1].start();
+    await waitFor(() => managers[1].snapshot().limited);
+    assert.equal(managers[1].snapshot().registered, 0);
+    await managers[0].close();
+    assert.equal(budget.snapshot().registered, 0);
+    await managers[1].refreshPaths();
+    assert.equal(managers[1].snapshot().registered, 1);
+    assert.equal(managers[1].snapshot().limited, false);
+  } finally {
+    await Promise.all(managers.map((manager) => manager.close()));
+    assert.equal(budget.snapshot().registered, 0);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("kernel watch exhaustion does not retry allocations in a loop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-watch-enospc-"));
+  const budget = new DirectoryWatchBudget(2);
+  let allocations = 0;
+  let reconciliations = 0;
+  const limits = [];
+  const manager = new WatchManager({
+    root,
+    platform: "linux",
+    watchBudget: budget,
+    debounceMs: 1,
+    maxWaitMs: 5,
+    reconcileIntervalMs: 0,
+    resumeCheckIntervalMs: 0,
+    resourceReconcileIntervalMs: 10,
+    watchFactory: () => {
+      allocations += 1;
+      throw Object.assign(new Error("watch allocation failed"), {
+        code: "ENOSPC",
+      });
+    },
+    onResourceLimit: (reason) => limits.push(reason),
+    onChanges: () => {
+      reconciliations += 1;
+    },
+  });
+  try {
+    manager.start();
+    await waitFor(() => reconciliations >= 3);
+    assert.equal(allocations, 1);
+    assert.deepEqual(limits, ["system_limit"]);
+    assert.equal(budget.snapshot().registered, 0);
+  } finally {
+    await manager.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("watch manager debounces file changes and reports overflow reconciliation", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "zvec-grep-watch-"));

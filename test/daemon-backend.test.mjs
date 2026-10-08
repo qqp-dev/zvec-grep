@@ -17,6 +17,58 @@ const noopWatchManagerFactory = () => ({
   close: async () => {},
 });
 
+test("independent child projects do not index or activate an ancestor workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zvec-grep-project-boundary-"));
+  const child = join(root, "child");
+  await mkdir(child);
+  await writeFile(join(root, "answer.ts"), "export const answer = 42;\n");
+  await writeFile(join(child, "package.json"), '{"name":"child"}\n');
+  const service = await createZvecGrep({
+    root,
+    embeddingModel: new TestEmbeddingModel(),
+  });
+  await service.index();
+  await service.close();
+  let models = 0;
+  let watchers = 0;
+  const backend = new DaemonBackend({
+    version: "test",
+    modelPoolOptions: {
+      createModel: () => {
+        models += 1;
+        return new TestEmbeddingModel();
+      },
+    },
+    watchManagerFactory: () => {
+      watchers += 1;
+      return noopWatchManagerFactory();
+    },
+  });
+  try {
+    for (const action of [
+      () => backend.planIndexAuthorization({ root: child }),
+      () => backend.index({ root: child }),
+    ]) {
+      await assert.rejects(action, { code: "ROOT_INDEX_MISMATCH" });
+    }
+    for (const action of [
+      () =>
+        backend.planSearchAuthorization(
+          searchInput(child, "answer", "eventual"),
+        ),
+      () => backend.search(searchInput(child, "answer", "eventual")),
+    ]) {
+      await assert.rejects(action, { code: "INDEX_MISSING" });
+    }
+    assert.equal(models, 0);
+    assert.equal(watchers, 0);
+    assert.equal((await backend.serverStatus()).activeRuntimes, 0);
+  } finally {
+    await backend.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("daemon reports watcher active only after watch registration", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "zvec-grep-watcher-active-"),

@@ -15,6 +15,22 @@ import {
   stopServer,
 } from "../dist/daemon/server-controller.js";
 
+test("disabled daemon autostart does not create state or spawn a backend", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "zvec-grep-managed-server-"));
+  const previous = process.env.ZVEC_GREP_DAEMON_AUTOSTART;
+  process.env.ZVEC_GREP_DAEMON_AUTOSTART = "0";
+  t.after(async () => {
+    if (previous === undefined) delete process.env.ZVEC_GREP_DAEMON_AUTOSTART;
+    else process.env.ZVEC_GREP_DAEMON_AUTOSTART = previous;
+    await rm(home, { recursive: true, force: true });
+  });
+  await assert.rejects(
+    startServer({ home, cliPath: "/unused/cli.js" }),
+    /autostart is disabled/,
+  );
+  assert.equal(await readInstanceRecord(home), undefined);
+});
+
 test("daemon instance lock is exclusive and owner-released", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "zvec-grep-controller-"));
   t.after(async () => rm(home, { recursive: true, force: true }));

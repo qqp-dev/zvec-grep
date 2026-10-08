@@ -242,6 +242,11 @@ refresh, authentication, and logs. See [MCP](./03-mcp.md) for the tool contract.
 | `ZVEC_GREP_SERVER_TOKEN_FILE` | File containing the server/client token |
 | `ZVEC_GREP_MCP_TOOLSET` | Default `agent` or `full` MCP surface |
 | `ZVEC_GREP_WATCHER_IDLE_TIMEOUT_SECONDS` | Seconds of workspace inactivity before the server releases its watcher; default `14400`, `0` disables idle eviction |
+| `ZVEC_GREP_MAX_ROOT_WATCHERS` | Maximum filtered directory watches per workspace; default `2048`, range `1..20000` |
+| `ZVEC_GREP_MAX_DAEMON_WATCHERS` | Shared server directory-watch budget; default `8192`, range `1..20000` |
+| `ZVEC_GREP_DAEMON_AUTOSTART` | Set `0` in clients to require a managed Server and prevent uncapped detached replacements |
+| `ZVEC_GREP_CPU_THREADS` | Total CPU GGUF inference-thread budget; unset keeps existing behavior; GPU inference is unchanged |
+| `ZVEC_GREP_BACKGROUND_DEVICE` | Set `cpu` to use a transient single-context CPU runtime for automatic local index reconciliation, preserving query settings |
 | `ZVEC_GREP_EMBEDDING` | Default model for new indexes |
 | `ZVEC_GREP_API_KEY` | Embedding provider API key |
 | `ZVEC_GREP_ENDPOINT` | Remote Embedding endpoint |

@@ -1,6 +1,6 @@
 import { access, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import {
   createZvecGrep,
   type ZvecGrepInfoResult,
@@ -66,6 +66,10 @@ export class RuntimeManager {
       requestedRoot,
       false,
     );
+    const knownRoot = this.aliases.get(canonicalRequestedRoot);
+    if (knownRoot) {
+      await assertSearchWorkspaceRoot(canonicalRequestedRoot, knownRoot);
+    }
     const activeRequestedRoot = this.runtimes.get(
       this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
     );
@@ -94,6 +98,7 @@ export class RuntimeManager {
       );
     }
     const canonicalRoot = await realpath(info.root);
+    await assertSearchWorkspaceRoot(canonicalRequestedRoot, canonicalRoot);
     this.aliases.set(canonicalRequestedRoot, canonicalRoot);
     return this.getOrCreate(canonicalRoot, {
       model: {
@@ -115,6 +120,8 @@ export class RuntimeManager {
       requestedRoot,
       true,
     );
+    const knownRoot = this.aliases.get(canonicalRequestedRoot);
+    if (knownRoot) assertExactIndexRoot(canonicalRequestedRoot, knownRoot);
     const activeRequestedRoot = this.runtimes.get(
       this.aliases.get(canonicalRequestedRoot) ?? canonicalRequestedRoot,
     );
@@ -133,6 +140,7 @@ export class RuntimeManager {
       false,
     );
     const canonicalRoot = await resolveRequestedRoot(info.root, true);
+    assertExactIndexRoot(canonicalRequestedRoot, canonicalRoot);
     this.aliases.set(canonicalRequestedRoot, canonicalRoot);
     return this.getOrCreate(canonicalRoot);
   }
@@ -304,6 +312,52 @@ export class RuntimeManager {
       return;
     }
     await this.evict(canonicalRoot);
+  }
+}
+
+export function assertExactIndexRoot(
+  requestedRoot: string,
+  canonicalRoot: string,
+): void {
+  if (requestedRoot !== canonicalRoot) {
+    throw new DaemonError(
+      "ROOT_INDEX_MISMATCH",
+      `The requested root ${requestedRoot} resolves to another workspace ${canonicalRoot}. Index the workspace root explicitly; a child project needs its own local workspace manifest.`,
+    );
+  }
+}
+
+export async function assertSearchWorkspaceRoot(
+  requestedRoot: string,
+  canonicalRoot: string,
+): Promise<void> {
+  // Searching an ordinary subdirectory of the same workspace is useful. An
+  // independent project boundary must not silently activate its ancestor.
+  let current = requestedRoot;
+  while (current !== canonicalRoot) {
+    const markers = [".git", "package.json", "Cargo.toml", "pyproject.toml"];
+    const found = await Promise.all(
+      markers.map((marker) =>
+        access(`${current}/${marker}`).then(
+          () => true,
+          () => false,
+        ),
+      ),
+    );
+    if (found.some(Boolean)) {
+      throw new DaemonError(
+        "INDEX_MISSING",
+        `No local workspace index was found for the project ${current}; the ancestor index ${canonicalRoot} was not activated. Use exact search or explicitly select the ancestor workspace.`,
+      );
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      throw new DaemonError(
+        "ROOT_INDEX_MISMATCH",
+        "The requested root is outside the discovered workspace.",
+      );
+    }
+    current = parent;
   }
 }
 

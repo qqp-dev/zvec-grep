@@ -183,6 +183,12 @@ export type ZvecGrepServerStatusResult = {
   activeRuntimes: number;
   queuedJobs: number;
   runningJobs: number;
+  watchers?: {
+    registered: number;
+    maximum: number;
+    perRootMaximum: number;
+    limitedRoots: number;
+  };
   models: {
     loaded: number;
     activeLeases: number;
@@ -630,6 +636,16 @@ export function registerZvecGrepTools(
           active_runtimes: result.activeRuntimes,
           queued_jobs: result.queuedJobs,
           running_jobs: result.runningJobs,
+          ...(result.watchers
+            ? {
+                watchers: {
+                  registered: result.watchers.registered,
+                  maximum: result.watchers.maximum,
+                  per_root_maximum: result.watchers.perRootMaximum,
+                  limited_roots: result.watchers.limitedRoots,
+                },
+              }
+            : {}),
           models: {
             loaded: result.models.loaded,
             active_leases: result.models.activeLeases,
