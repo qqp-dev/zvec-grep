@@ -4,6 +4,7 @@ import { DaemonBackend } from "./backend.js";
 import {
   configuredListenAddress,
   configuredWatcherIdleTimeoutMs,
+  configuredWatchLimits,
   resolveServerToken,
 } from "./config.js";
 import { DaemonHttpServer } from "./http-server.js";
@@ -37,6 +38,7 @@ export async function runDaemonForeground(
     process.env[MCP_TOOLSET_ENV],
   );
   const runtimeIdleTtlMs = configuredWatcherIdleTimeoutMs();
+  const watchLimits = configuredWatchLimits();
   const listen = configuredListenAddress(options.listen);
   const displayAddress = `http://${displayHost(listen.host)}:${listen.port}/mcp`;
   const logger = createDaemonLogger(options.home, readGlobalConfig().log);
@@ -67,6 +69,7 @@ export async function runDaemonForeground(
     version: options.version,
     serviceOptions: options.serviceOptions,
     runtimeIdleTtlMs,
+    ...watchLimits,
     logger,
   });
   let requestStop: (() => void) | undefined;

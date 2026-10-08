@@ -69,9 +69,15 @@ import {
   inspectRoot,
   resolveRequestedRoot,
   RuntimeManager,
+  assertExactIndexRoot,
+  assertSearchWorkspaceRoot,
 } from "./runtime-manager.js";
 import type { RootRuntime } from "./root-runtime.js";
 import { WatchManager, type WatchManagerOptions } from "./watch-manager.js";
+import {
+  DirectoryWatchBudget,
+  DEFAULT_MAX_DIRECTORY_WATCHERS,
+} from "./watch-budget.js";
 import { rootIdentity, type DaemonLogger } from "./logger.js";
 import {
   RemoteEmbeddingAuthorizationManager,
@@ -98,6 +104,8 @@ export type DaemonBackendOptions = {
   logger?: DaemonLogger;
   authorizationStore?: RemoteEmbeddingAuthorizationStore;
   inspectRoot?: typeof inspectRoot;
+  maxDirectoryWatchers?: number;
+  maxDaemonWatchers?: number;
 };
 
 type DaemonIndexInput = ZvecGrepIndexRequest & {
@@ -107,6 +115,7 @@ type DaemonIndexInput = ZvecGrepIndexRequest & {
 };
 
 export class DaemonBackend implements ZvecGrepDaemonBackend {
+  private readonly watchBudget: DirectoryWatchBudget;
   readonly modelPool: EmbeddingModelPool;
   readonly runtimeManager: RuntimeManager;
   readonly scheduler: JobScheduler;
@@ -128,6 +137,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
   private closePromise?: Promise<void>;
 
   constructor(private readonly options: DaemonBackendOptions) {
+    this.watchBudget = new DirectoryWatchBudget(options.maxDaemonWatchers);
     this.authorizationManager = new RemoteEmbeddingAuthorizationManager(
       options.authorizationStore ??
         new RemoteEmbeddingAuthorizationStore({
@@ -172,6 +182,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       input.root,
       this.options.serviceOptions,
       input.rebuild !== true,
+    );
+    assertExactIndexRoot(
+      requestedRoot,
+      await resolveRequestedRoot(info.root, false),
     );
     let modelLoadRequest: EmbeddingModelLoadRequest;
     try {
@@ -235,6 +249,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     if (!canonicalRoot) {
       discoveredInfo = await this.inspectRoot(input.root, false);
       canonicalRoot = await resolveRequestedRoot(discoveredInfo.root, false);
+      await assertSearchWorkspaceRoot(requestedRoot, canonicalRoot);
       activeRuntime = this.runtimeManager.getByCanonicalRoot(canonicalRoot);
       const provider =
         activeRuntime?.embeddingProvider() ??
@@ -303,6 +318,10 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       onProgress?: (progress: IndexProgress) => void;
     } = {},
   ): Promise<ZvecGrepIndexResult> {
+    const indexInput: DaemonIndexInput = {
+      ...input,
+      runtimeOverridesAreEphemeral: input.runtimeEphemeral === true,
+    };
     if (input.drop === true) {
       assertDropOnlyInput(input);
       const result = await this.dropIndex(input);
@@ -341,7 +360,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       run: async (report, signal) => {
         const proof = await this.runIndex(
           runtime,
-          input,
+          indexInput,
           report,
           options.authorization,
           signal,
@@ -676,6 +695,14 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       queuedJobs: jobs.queued,
       runningJobs: jobs.running,
       models,
+      watchers: {
+        ...this.watchBudget.snapshot(),
+        perRootMaximum:
+          this.options.maxDirectoryWatchers ?? DEFAULT_MAX_DIRECTORY_WATCHERS,
+        limitedRoots: [...this.watchers.values()].filter(
+          (watcher) => watcher.snapshot?.().limited,
+        ).length,
+      },
     };
   }
 
@@ -988,6 +1015,17 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
       ((options) => new WatchManager(options))
     )({
       root: runtime.canonicalRoot,
+      watchBudget: this.watchBudget,
+      maxDirectoryWatchers: this.options.maxDirectoryWatchers,
+      onResourceLimit: (reason) =>
+        this.options.logger?.event("watcher.resource_limited", {
+          root_id: rootIdentity(runtime.canonicalRoot),
+          reason,
+          registered: this.watchBudget.snapshot().registered,
+          maximum: this.watchBudget.maximum,
+          root_maximum:
+            this.options.maxDirectoryWatchers ?? DEFAULT_MAX_DIRECTORY_WATCHERS,
+        }),
       onChanges: async (changes, reason) => {
         const pathCount =
           changes.touchedFiles.length +
@@ -1403,6 +1441,7 @@ function assertDropOnlyInput(input: ZvecGrepIndexInput): void {
     [input.device !== undefined, "device"],
     [input.rebuild !== undefined, "rebuild"],
     [input.resetPaths !== undefined, "resetPaths"],
+    [input.runtimeEphemeral !== undefined, "runtimeEphemeral"],
     [input.globs !== undefined, "globs"],
     [input.insensitiveGlobs !== undefined, "insensitiveGlobs"],
     [input.fileTypes !== undefined, "fileTypes"],

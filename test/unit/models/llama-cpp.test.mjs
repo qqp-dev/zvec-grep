@@ -193,6 +193,66 @@ async function captureStderr(callback) {
   }
 }
 
+test("CPU thread budget bounds context concurrency and threads without loading a real model", async (t) => {
+  const previous = process.env.ZVEC_GREP_CPU_THREADS;
+  process.env.ZVEC_GREP_CPU_THREADS = "2";
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZVEC_GREP_CPU_THREADS;
+    else process.env.ZVEC_GREP_CPU_THREADS = previous;
+  });
+  const modelFile = await ggufFile(t);
+  const setup = createDependencies(modelFile.path);
+  const model = new LlamaCppEmbeddingModel(
+    entry(),
+    {
+      modelCacheDir: modelFile.root,
+      device: "cpu",
+      embeddingConcurrency: 8,
+    },
+    setup.dependencies,
+  );
+  t.after(() => model.dispose());
+  await model.embed(
+    Array.from({ length: 8 }, () => ({ kind: "text", text: "test" })),
+    { purpose: "query" },
+  );
+  assert.equal(setup.calls.contexts.length, 2);
+  assert.equal(
+    setup.calls.contexts.reduce((total, context) => total + context.threads, 0),
+    2,
+  );
+});
+
+test("CPU thread budget leaves GPU context settings unchanged", async (t) => {
+  const previous = process.env.ZVEC_GREP_CPU_THREADS;
+  process.env.ZVEC_GREP_CPU_THREADS = "2";
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZVEC_GREP_CPU_THREADS;
+    else process.env.ZVEC_GREP_CPU_THREADS = previous;
+  });
+  const modelFile = await ggufFile(t);
+  const setup = createDependencies(modelFile.path);
+  const model = new LlamaCppEmbeddingModel(
+    entry(),
+    {
+      modelCacheDir: modelFile.root,
+      device: "metal",
+      embeddingConcurrency: 4,
+    },
+    setup.dependencies,
+  );
+  t.after(() => model.dispose());
+  await model.embed(
+    Array.from({ length: 4 }, () => ({ kind: "text", text: "test" })),
+    { purpose: "query" },
+  );
+  assert.equal(setup.calls.contexts.length, 4);
+  assert.equal(
+    setup.calls.contexts.every((context) => context.threads === 0),
+    true,
+  );
+});
+
 test("local embedding loads GGUF, formats and truncates text, parallelizes, caches, and disposes", async (t) => {
   const modelFile = await ggufFile(t);
   const setup = createDependencies(modelFile.path);

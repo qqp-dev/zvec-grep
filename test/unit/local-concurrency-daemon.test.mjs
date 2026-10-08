@@ -84,7 +84,7 @@ function daemonLifecycle(t, hooks = {}) {
       },
     },
     createService: async (options) => {
-      await hooks.createService?.();
+      await hooks.createService?.(options);
       return {
         index: async () => {
           hooks.index?.();
@@ -354,6 +354,35 @@ test("daemon index limits never enter query models or persisted runtime", async 
   assert.equal(
     backend.modelPool.keyFor(active),
     backend.modelPool.keyFor(search),
+  );
+});
+
+test("ephemeral CPU indexing preserves the stored device for later queries", async (t) => {
+  const created = [];
+  const fixture = daemonLifecycle(t, {
+    createService: (options) => created.push(options),
+  });
+  t.mock.method(fixture.backend, "readWorkspaceEmbeddingRuntime", () => ({
+    device: "vulkan",
+  }));
+  await fixture.index({
+    device: "cpu",
+    runtimeOverridesAreEphemeral: true,
+    embeddingConcurrency: 1,
+  });
+  assert.equal(created[0].device, undefined);
+  assert.equal(
+    fixture.backend.searchModelLoadRequest(
+      {
+        root: fixture.runtime.canonicalRoot,
+        indexed: true,
+        workspaceIndex: {
+          embedding: { provider: "local", model: "bge-small-en-v1.5" },
+        },
+      },
+      {},
+    ).runtime.device,
+    "vulkan",
   );
 });
 

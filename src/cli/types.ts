@@ -53,6 +53,7 @@ export type CliOptions = {
   drop?: boolean;
   force?: boolean;
   resetPaths?: boolean;
+  runtimeEphemeral?: boolean;
   refresh?: QueryRefreshMode;
   preferSymbol?: boolean;
   globs?: string[];

@@ -123,6 +123,43 @@ zg server on
 
 Set the value to `0` to keep activated watchers until the Server stops.
 
+Linux registers filtered directory watches with a default limit of 2,048 per
+Workspace and 8,192 across the Server. Ignored dependency and generated trees
+are excluded before registration. Configure lower or higher budgets before
+starting the Server with `ZVEC_GREP_MAX_ROOT_WATCHERS` and
+`ZVEC_GREP_MAX_DAEMON_WATCHERS` (positive integers, at most 20,000).
+
+When a budget or operating-system watch limit is reached, registration stops
+and freshness is checked through periodic reconciliation. The Server keeps the
+watches already registered, emits a `watcher.resource_limited` diagnostic once,
+and avoids an allocation retry loop. An explicit index/path refresh can retry
+registration after capacity becomes available. Server status includes watch
+counts, budgets, and the number of Workspaces with incomplete watch coverage.
+
+An explicit index root must resolve to that Workspace. Indexing a child project
+cannot silently modify an ancestor index. Searches can use ordinary
+subdirectories of a Workspace, but crossing an independent project marker
+(`.git`, `package.json`, `Cargo.toml`, or `pyproject.toml`) requires a local
+index or explicitly selecting the ancestor root.
+
+For scheduled CPU reconciliation, use a transient runtime override:
+
+```bash
+zg --index /path/to/workspace --mode server --device cpu --index-embedding-concurrency 1 --runtime-ephemeral
+```
+
+This retains the Workspace's stored device for later queries. Set
+`ZVEC_GREP_CPU_THREADS=2` before starting the Server to cap the total inference
+threads and contexts for CPU GGUF embeddings; GPU contexts keep their existing
+settings. The transient-runtime flag requires Server mode.
+
+Set `ZVEC_GREP_DAEMON_AUTOSTART=0` in clients to require an existing managed
+Server. Proxies reuse its instance lock and health endpoint; they fail clearly
+instead of spawning an unrestricted replacement if it is unavailable. A service
+manager can launch `zg --server run` in the foreground with its own CPU, memory,
+and task limits. Existing stdio bridges exit when their Server disappears;
+reconnecting a client creates a new bridge to the managed Server.
+
 ## Configure the mode
 
 Choose a mode for one command:

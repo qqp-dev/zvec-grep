@@ -3,12 +3,51 @@ import { join } from "node:path";
 import { readGlobalConfig } from "../engine/config.js";
 import { defaultHome } from "../engine/utils/path.js";
 import { DaemonError } from "./errors.js";
+import {
+  DEFAULT_MAX_DAEMON_WATCHERS,
+  DEFAULT_MAX_DIRECTORY_WATCHERS,
+} from "./watch-budget.js";
 
 export const DEFAULT_SERVER_HOST = "127.0.0.1";
 export const DEFAULT_SERVER_PORT = 7_999;
 export const DEFAULT_WATCHER_IDLE_TIMEOUT_MS = 4 * 60 * 60_000;
 export const WATCHER_IDLE_TIMEOUT_SECONDS_ENV =
   "ZVEC_GREP_WATCHER_IDLE_TIMEOUT_SECONDS";
+
+export function configuredWatchLimits(
+  environment: NodeJS.ProcessEnv = process.env,
+): {
+  maxDirectoryWatchers: number;
+  maxDaemonWatchers: number;
+} {
+  const readLimit = (name: string, fallback: number) => {
+    const raw = environment[name]?.trim();
+    if (!raw) return fallback;
+    const value = Number(raw);
+    if (
+      !/^\d+$/.test(raw) ||
+      !Number.isSafeInteger(value) ||
+      value < 1 ||
+      value > 20_000
+    ) {
+      throw new DaemonError(
+        "INVALID_WATCH_LIMIT",
+        `${name} must be an integer between 1 and 20000.`,
+      );
+    }
+    return value;
+  };
+  return {
+    maxDirectoryWatchers: readLimit(
+      "ZVEC_GREP_MAX_ROOT_WATCHERS",
+      DEFAULT_MAX_DIRECTORY_WATCHERS,
+    ),
+    maxDaemonWatchers: readLimit(
+      "ZVEC_GREP_MAX_DAEMON_WATCHERS",
+      DEFAULT_MAX_DAEMON_WATCHERS,
+    ),
+  };
+}
 
 const MAX_TIMER_DELAY_SECONDS = Math.floor(2_147_483_647 / 1_000);
 

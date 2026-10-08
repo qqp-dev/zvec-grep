@@ -201,6 +201,11 @@ export async function startServer(options: {
     if (current.ready) return current;
     return waitForStatus(options.home, true, options.timeoutMs ?? 10_000);
   }
+  if (process.env.ZVEC_GREP_DAEMON_AUTOSTART === "0") {
+    throw new Error(
+      "zvec-grep daemon autostart is disabled. Start the managed Server service before connecting; foreground zg --server run remains available.",
+    );
+  }
   const listen = configuredListenAddress(options.listen);
   try {
     await assertListenAddressAvailable(listen.host, listen.port);

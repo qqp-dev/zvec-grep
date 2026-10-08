@@ -202,6 +202,7 @@ Embedding options:
   --model-cache <path>              Local model cache directory
   --device <device>                 auto, cpu, metal, vulkan, cuda
   --index-embedding-concurrency <n> Index embedding concurrency limit
+  --runtime-ephemeral               Do not persist runtime overrides during Server indexing
   --allow-remote                    Allow Remote Embedding for this command only
 
 Index concurrency limits llama.cpp contexts, Transformers.js calls in flight,

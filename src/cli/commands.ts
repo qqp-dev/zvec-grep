@@ -29,6 +29,10 @@ import {
   routeByMode,
 } from "../client/mode-router.js";
 import { serverStatus } from "../daemon/server-controller.js";
+import {
+  assertExactIndexRoot,
+  resolveRequestedRoot,
+} from "../daemon/runtime-manager.js";
 import { findNearestWorkspace } from "../engine/service/root.js";
 import type { ParsedArgs, CliOptions } from "./types.js";
 import {
@@ -222,6 +226,15 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
     await runDropIndex(parsed, rootPath.absolutePath);
     return;
   }
+  if (explicitRoot) {
+    const requestedRoot = await resolveRequestedRoot(
+      rootPath.absolutePath,
+      true,
+    );
+    const discoveredRoot =
+      findNearestWorkspace(requestedRoot)?.root ?? requestedRoot;
+    assertExactIndexRoot(requestedRoot, discoveredRoot);
+  }
   if (parsed.options.embedding) {
     requireEmbeddingModelCatalogEntry(parsed.options.embedding);
   }
@@ -247,6 +260,7 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
             device: parsed.options.device,
             rebuild: parsed.options.rebuild,
             resetPaths: parsed.options.resetPaths,
+            runtimeEphemeral: parsed.options.runtimeEphemeral,
             globs: parsed.options.globs,
             insensitiveGlobs: parsed.options.insensitiveGlobs,
             fileTypes: parsed.options.fileTypes,
@@ -297,7 +311,13 @@ async function runIndex(parsed: ParsedArgs): Promise<void> {
         }
       }
     },
-    direct: () => runDirectIndex(parsed, rootPath, explicitRoot),
+    direct: () => {
+      if (parsed.options.runtimeEphemeral)
+        throw new Error(
+          "--runtime-ephemeral requires a running Server; use --mode server.",
+        );
+      return runDirectIndex(parsed, rootPath, explicitRoot);
+    },
   });
 }
 

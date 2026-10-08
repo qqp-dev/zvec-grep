@@ -314,6 +314,8 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
       options.color = "never";
     } else if (arg === "--rebuild") {
       options.rebuild = true;
+    } else if (arg === "--runtime-ephemeral") {
+      options.runtimeEphemeral = true;
     } else if (arg === "--drop") {
       options.drop = true;
     } else if (arg === "--force") {
@@ -347,7 +349,10 @@ export function parseArgs(args: readonly string[]): ParsedArgs {
         readOptionValue(commandArgs, ++index, arg),
         arg,
       );
-    } else if (arg === "--index-embedding-concurrency") {
+    } else if (
+      arg === "--index-embedding-concurrency" ||
+      arg === "--embedding-concurrency"
+    ) {
       options.embeddingConcurrency = parsePositiveInteger(
         readOptionValue(commandArgs, ++index, arg),
         arg,
@@ -987,9 +992,13 @@ function validateCliShape(
   if (options.resetPaths && command !== "index") {
     throw new Error("--reset-paths can only be used with zg --index");
   }
+  if (options.runtimeEphemeral && command !== "index") {
+    throw new Error("--runtime-ephemeral can only be used with zg index");
+  }
   if (
     options.drop &&
     (options.rebuild ||
+      options.runtimeEphemeral ||
       options.resetPaths ||
       options.home ||
       options.embedding ||
