@@ -14,6 +14,19 @@ export const DEFAULT_WATCHER_IDLE_TIMEOUT_MS = 4 * 60 * 60_000;
 export const WATCHER_IDLE_TIMEOUT_SECONDS_ENV =
   "ZVEC_GREP_WATCHER_IDLE_TIMEOUT_SECONDS";
 
+export function configuredBackgroundDevice(
+  environment: NodeJS.ProcessEnv = process.env,
+): "cpu" | undefined {
+  const value = environment.ZVEC_GREP_BACKGROUND_DEVICE?.trim();
+  if (!value) return undefined;
+  if (value !== "cpu")
+    throw new DaemonError(
+      "INVALID_BACKGROUND_DEVICE",
+      "ZVEC_GREP_BACKGROUND_DEVICE must be cpu or unset.",
+    );
+  return value;
+}
+
 export function configuredWatchLimits(
   environment: NodeJS.ProcessEnv = process.env,
 ): {

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parseArgs } from "../../dist/cli/args.js";
-import { configuredWatchLimits } from "../../dist/daemon/config.js";
+import {
+  configuredWatchLimits,
+  configuredBackgroundDevice,
+} from "../../dist/daemon/config.js";
 import {
   assertExactIndexRoot,
   assertSearchWorkspaceRoot,
@@ -12,6 +15,15 @@ import {
 } from "../../dist/daemon/runtime-manager.js";
 
 test("directory watch configuration keeps finite defaults and rejects unbounded values", () => {
+  assert.equal(configuredBackgroundDevice({}), undefined);
+  assert.equal(
+    configuredBackgroundDevice({ ZVEC_GREP_BACKGROUND_DEVICE: "cpu" }),
+    "cpu",
+  );
+  assert.throws(
+    () => configuredBackgroundDevice({ ZVEC_GREP_BACKGROUND_DEVICE: "vulkan" }),
+    { code: "INVALID_BACKGROUND_DEVICE" },
+  );
   assert.deepEqual(configuredWatchLimits({}), {
     maxDirectoryWatchers: 2048,
     maxDaemonWatchers: 8192,

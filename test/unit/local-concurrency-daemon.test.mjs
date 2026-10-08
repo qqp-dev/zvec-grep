@@ -50,13 +50,14 @@ function daemonLifecycle(t, hooks = {}) {
   };
   const backend = new DaemonBackend({
     version: "test",
+    backgroundDevice: hooks.backgroundDevice,
     modelPoolOptions: {
       maxLoadedModels: 1,
       idleTtlMs: 60_000,
       createModel: (request) => {
         const concurrency = request.embeddingConcurrency ?? 1;
         events.push(`create:${concurrency}`);
-        hooks.createModel?.(concurrency);
+        hooks.createModel?.(concurrency, request);
         const model = {
           async embedQuery() {
             load();
@@ -384,6 +385,31 @@ test("ephemeral CPU indexing preserves the stored device for later queries", asy
     ).runtime.device,
     "vulkan",
   );
+});
+
+test("automatic reconciliation uses a transient single-context CPU runtime", async (t) => {
+  const requests = [];
+  const created = [];
+  const fixture = daemonLifecycle(t, {
+    backgroundDevice: "cpu",
+    createModel: (_concurrency, request) => requests.push(request),
+    createService: (options) => created.push(options),
+  });
+  t.mock.method(fixture.backend, "readWorkspaceEmbeddingRuntime", () => ({
+    device: "vulkan",
+  }));
+  const result = await fixture.backend.submitIndex(
+    fixture.runtime,
+    { device: "vulkan", embeddingConcurrency: 8, changedPaths: ["fixture.ts"] },
+    "background_reconcile",
+    true,
+  );
+  assert.equal(result.state, "succeeded");
+  assert.equal(requests[0].runtime.device, "cpu");
+  assert.equal(requests[0].embeddingConcurrency, 1);
+  assert.equal(created[0].device, undefined);
+  const remote = { embeddingProvider: () => "qwen" };
+  assert.deepEqual(fixture.backend.automaticIndexInput(remote, {}), {});
 });
 
 test("daemon resolves index defaults for local and remote models before loading or scheduling", async (t) => {

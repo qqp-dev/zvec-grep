@@ -153,6 +153,11 @@ This retains the Workspace's stored device for later queries. Set
 threads and contexts for CPU GGUF embeddings; GPU contexts keep their existing
 settings. The transient-runtime flag requires Server mode.
 
+Set `ZVEC_GREP_BACKGROUND_DEVICE=cpu` before starting the Server to apply the
+same transient CPU policy, with concurrency one, to automatic file-watcher,
+eventual refresh, and freshness reconciliation jobs for local embeddings. Query
+inference still uses the Workspace's stored device; Remote Embedding is unchanged.
+
 Set `ZVEC_GREP_DAEMON_AUTOSTART=0` in clients to require an existing managed
 Server. Proxies reuse its instance lock and health endpoint; they fail clearly
 instead of spawning an unrestricted replacement if it is unavailable. A service

@@ -106,6 +106,7 @@ export type DaemonBackendOptions = {
   inspectRoot?: typeof inspectRoot;
   maxDirectoryWatchers?: number;
   maxDaemonWatchers?: number;
+  backgroundDevice?: "cpu";
 };
 
 type DaemonIndexInput = ZvecGrepIndexRequest & {
@@ -929,6 +930,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     wait: boolean,
     authorization?: RemoteEmbeddingOperationPermit,
   ): Promise<IndexJobSnapshot> {
+    const effectiveInput = this.automaticIndexInput(runtime, input);
     const createsWork =
       !this.scheduler.hasActiveRoot(runtime.canonicalRoot) ||
       input.rebuild === true;
@@ -955,7 +957,7 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         }
         const proof = await this.runIndex(
           runtime,
-          input,
+          effectiveInput,
           report,
           authorization,
           signal,
@@ -971,6 +973,24 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
     const job = await this.scheduler.wait(submitted.job.id);
     await this.scheduler.waitForRootIdle(runtime.canonicalRoot);
     return job;
+  }
+
+  private automaticIndexInput(
+    runtime: RootRuntime,
+    input: DaemonIndexInput,
+  ): DaemonIndexInput {
+    if (
+      this.options.backgroundDevice === "cpu" &&
+      runtime.embeddingProvider() === "local"
+    ) {
+      return {
+        ...input,
+        device: "cpu",
+        embeddingConcurrency: 1,
+        runtimeOverridesAreEphemeral: true,
+      };
+    }
+    return input;
   }
 
   private ensureWatcher(runtime: RootRuntime): void {
@@ -999,11 +1019,11 @@ export class DaemonBackend implements ZvecGrepDaemonBackend {
         }
         return await this.runIndex(
           runtime,
-          {
+          this.automaticIndexInput(runtime, {
             root: runtime.canonicalRoot,
             changedPaths: changes.forceFullReconcile ? undefined : changedPaths,
             skipInitialStatus: changes.forceFullReconcile,
-          },
+          }),
           report,
           automaticAuthorization.authorization,
           signal,
